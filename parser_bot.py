@@ -8,6 +8,11 @@ import pandas as pd
 from seleniumbase import Driver
 from selenium.webdriver.common.by import By
 from dotenv import load_dotenv
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from fake_useragent import UserAgent
 
 load_dotenv() 
 
@@ -17,6 +22,7 @@ BRICKOGNIZE_API_URL = "https://api.brickognize.com/predict/"
 
 bot = telebot.TeleBot(TOKEN)
 
+else_parsed_data = []
 parsed_data = []
 lego_details = {}
 
@@ -25,14 +31,15 @@ def start(message):
     reset_session_data()
     bot.send_message(message.chat.id, "Здравствуйте! Пожалуйста, пришлите мне фотографию набора, минифигурки или детали LEGO, и я постараюсь идентифицировать его для вас. Желательно, чтобы фото было на однотонном фоне и хорошего качества.")
 
-@bot.message_handler(commands=['restart'])
+@bot.message_handler(commands=['reset'])
 def restart(message):
     reset_session_data()
     bot.send_message(message.chat.id, "Перезапускаем бота...")
     start(message) 
 
 def reset_session_data():
-    global parsed_data, lego_details
+    global parsed_data, lego_details, else_parsed_data
+    else_parsed_data = []
     parsed_data = []
     lego_details = {}  
 
@@ -61,9 +68,9 @@ def handle_photo(message):
         url = lego_details.get('external_sites')[0]['url']
 
  
-        response_message = f"Найденный товар:\nНазвание: {name}\nID: {lego_id}\nURL: {url}\n\nХотите ли Вы найти данный товар на Авито или на Lekub.ru?"
+        response_message = f"Найденный товар:\nНазвание: {name}\nID: {lego_id}\nURL: {url}\n\nНа какой площадке Вы хотите найти данный товар: Авито, Ebricks, Kuboteka?"
         markup = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True)
-        markup.add('Авито', 'Lekub.ru')
+        markup.add('Авито', 'Ebricks', 'Kuboteka')
         bot.send_message(message.chat.id, response_message, reply_markup=markup)
 
 
@@ -99,14 +106,14 @@ def process_lego_image(photo_path: str):
         except requests.exceptions.ConnectionError as e:
             print(f"Ошибка подключения при попытке {attempt + 1}: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2)  # Wait before retrying
+                time.sleep(2) 
             else:
                 print("Достигнуто максимальное количество повторных попыток. Не удалось подключиться к API.")
                 return None
         except requests.exceptions.RequestException as e:
             print(f"Запросить исключение при попытке {attempt + 1}: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2)  # Wait before retrying
+                time.sleep(2)
             else:
                 print("Достигнуто максимальное количество повторных попыток. Не удалось подключиться к API.")
                 return None
@@ -122,19 +129,32 @@ def handle_resource_choice(message, lego_details):
         lego_id = lego_details.get('id', '')
         query = f"{name} {lego_id}"
         bot.send_message(message.chat.id, f"Ищу: {query} на Авито...")
-        avito_data = search_avito(query)
+        avito_data = search_avito(query) or []
         parsed_data.extend(avito_data)
         ask_for_format(message)
-    elif message.text.lower() == 'lekub.ru':
-        name = lego_details.get('name', '')
+    elif message.text.lower() == 'ebricks':
         lego_id = lego_details.get('id', '')
-        query = f"{name} {lego_id}"
-        bot.send_message(message.chat.id, f"Ищу: {query} на Lekub.ru...")
-        lekub_data = search_lekub(query)
-        parsed_data.extend(lekub_data)
+        query = f"{lego_id}"
+        bot.send_message(message.chat.id, f"Ищу: {query} на Ebricks...")
+        ebricks_data = ebricks(query) or []
+        else_parsed_data.extend(ebricks_data)
+        ask_for_format(message)
+    # elif message.text.lower() == 'lekub':
+    #     lego_id = lego_details.get('id', '')
+    #     query = f"{lego_id}"
+    #     bot.send_message(message.chat.id, f"Ищу: {query} на Lekub...")
+    #     lekub_data = lekub(query) or []
+    #     else_parsed_data.extend(lekub_data)
+    #     ask_for_format(message)
+    elif message.text.lower() == 'kuboteka':
+        lego_id = lego_details.get('id', '')
+        query = f"{lego_id}"
+        bot.send_message(message.chat.id, f"Ищу: {query} на Kuboteka...")
+        kuboteka_data = kuboteka(query) or []
+        else_parsed_data.extend(kuboteka_data)
         ask_for_format(message)
     else:
-        bot.send_message(message.chat.id, "Некорректный выбор. Выберите из Авито и Lekub.ru")
+        bot.send_message(message.chat.id, "Некорректный выбор. Выберите из Авито, Ebricks, Lekub, Kuboteka")
         bot.register_next_step_handler(message, handle_resource_choice, lego_details)
 
 def ask_for_format(message):
@@ -143,11 +163,10 @@ def ask_for_format(message):
     bot.send_message(message.chat.id, "Как бы вы хотели получить данные?", reply_markup=markup)
     bot.register_next_step_handler(message, handle_save_format)
 
-
 def search_avito(query: str):
     try:
         driver = Driver(uc=True)
-        driver.uc_open_with_reconnect(f'https://www.avito.ru/moskva?q={query}', reconnect_time=4)
+        driver.uc_open_with_reconnect(f'https://www.avito.ru/moskva?q={query}', reconnect_time=6)
         driver.uc_gui_click_captcha()
 
         listings = []
@@ -167,6 +186,8 @@ def search_avito(query: str):
             })
         
         driver.quit()
+        if not listings:
+                return [] 
         return listings
     
     except Exception as e:
@@ -174,47 +195,144 @@ def search_avito(query: str):
         driver.quit()
         return []
     
-def search_lekub(query: str):
+def ebricks(ebricks_search):
+    data_list = []
     try:
-        driver = Driver(uc=True)
-        driver.uc_open_with_reconnect(f'https://lekub.ru/search/?keyword={query}', reconnect_time=4)
-        driver.uc_gui_click_captcha()
+        ua = UserAgent()
+        options = webdriver.ChromeOptions()
+        options.add_argument(f"--user-agent={ua.random}")
+        options.add_argument("--headless")
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        url = f"https://ebricks.ru/products/search?sort=0&balance=&categoryId=&min_cost=&max_cost=&page=1&text={ebricks_search}"
+        driver.get(url)
 
-        listings = []
-        items = driver.find_elements(By.CSS_SELECTOR, '.pinfo')
-        
-        for item in items:
-            name = item.find_element(By.CSS_SELECTOR, 'h2').text
-            link = item.find_element(By.CSS_SELECTOR, "a").get_attribute('href')
-            price = item.find_element(By.CSS_SELECTOR, "[itemprop='price']").get_attribute('content')
-        
-            listings.append({
+        product_divs = driver.find_elements(By.CLASS_NAME, "product-item.text-center.medium-text-left")
+        if product_divs:
+            for div in product_divs:
+                text = div.text
+                link_element = div.find_element(By.CLASS_NAME, "product-item__preview")
+                link = link_element.get_attribute("href") if link_element else ""
+
+                data = {"count": text.split('\n')[0].split(':')[-1],
+                        'name': text.split('\n')[1],
+                        'price': text.split('\n')[2],
+                        "link": link}
+                data_list.append(data)
+                if not data_list:
+                    return [] 
+                return data_list
+        else:
+            print("Товары не найдены.")
+            return
+
+    finally:
+        driver.quit()
+
+# def lekub(query):
+#     data_list = []
+#     try:
+#         ua = UserAgent()
+#         options = webdriver.ChromeOptions()
+#         options.add_argument(f"--user-agent={ua.random}")  # Добавление случайного user-agent
+#         options.add_argument("--headless")  # Запуск в фоновом режиме (без GUI)
+#         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+#         url = f"https://lekub.ru/search/?keyword={query}"
+#         driver.get(url)
+
+#         no_results = driver.find_elements(By.XPATH, "//p[text()='Нет товаров, соответствующих критериям поиска.']")
+#         if no_results:
+#             print("Таких деталей нет.")
+#             return
+
+#         item_elements = driver.find_elements(By.XPATH, "//div[@itemprop='itemListElement']")
+#         for item in item_elements:
+#             h2_element = item.find_element(By.TAG_NAME, "h2")
+#             name = h2_element.text if h2_element else ""
+
+#             if query.lower() not in name.lower():
+#                 continue
+
+#             link_element = item.find_element(By.CLASS_NAME, "pinfo").find_element(By.TAG_NAME, "a")
+#             link = link_element.get_attribute("href") if link_element else ""
+
+#             price_element = item.find_element(By.CLASS_NAME, "tovar-footer")
+#             price = price_element.text if price_element else ""
+#             price_lego = 0
+#             if price != 'нет в наличии':
+#                 if len(price.split('\n')) > 2:
+#                     price_lego = price.split('\n')[1]
+#                 else:
+#                     price_lego = price.split('\n')[0]
+
+#             data = {"count": (0 if price == 'нет в наличии' else 1),
+#                     'name': name,
+#                     'price': price_lego,
+#                     "link": link}
+#             data_list.append(data)
+#             if not data_list:
+#                 return [] 
+#             return data_list
+
+#     finally:
+#         driver.quit()
+
+def kuboteka(search_query):
+    data_list = []
+    try:
+        ua = UserAgent()
+        options = webdriver.ChromeOptions()
+        options.add_argument(f"--user-agent={ua.random}")  # Добавление случайного user-agent
+        options.add_argument("--headless")  # Запуск в фоновом режиме (без GUI)
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        url = f"https://kuboteka.shop/search/?search={search_query}"
+        driver.get(url)
+
+        no_results = driver.find_elements(By.XPATH, "//p[text()='Нет товаров, соответствующих критериям поиска.']")
+        if no_results:
+            print('Нет результатов.')
+            return
+
+        product_div = driver.find_element(By.CLASS_NAME, "product__card__inner")
+
+        link_element = driver.find_element(By.CLASS_NAME, "product__card__image")
+        link = link_element.get_attribute("href") if link_element else ""
+
+        name_element = product_div.find_element(By.XPATH, ".//span[@itemprop='name']")
+        name = name_element.text if name_element else ""
+
+        data = {"count": product_div.text.split('\n')[-1].split(':')[-1].split(' ')[-2],
                 'name': name,
-                'price': price,
-                'url': link
-            })
-        
+                'price': product_div.text.split('\n')[3],
+                "link": link}
+        data_list.append(data)
+        if not data_list:
+            return [] 
+        return data_list
+    finally:
         driver.quit()
-        return listings
-    
-    except Exception as e:
-        print(f"Ошибка во время парсинга Lekub.ru: {e}")
-        driver.quit()
-        return []
-
 
 def handle_save_format(message):
     if message.text.lower() == 'вывести результаты в telegram':
         for result in parsed_data:
             response_message = f"Название: {result['name']}\nОписание: {result['description']}\nЦена: {result['price']}\nURL: {result['url']}"
             bot.send_message(message.chat.id, response_message)
+        for result in else_parsed_data:
+            response_message = f"Название: {result['name']}\nКоличество: {result['count']}\nЦена: {result['price']}\nURL: {result['link']}"
+            bot.send_message(message.chat.id, response_message)
     elif message.text.lower() == 'сохранить в формате json':
-        save_as_json(parsed_data, message)
+        if parsed_data:
+            save_as_json(parsed_data, message)
+        else:
+            save_as_json(else_parsed_data, message)
     elif message.text.lower() == 'сохранить в формате csv':
-        save_as_csv(parsed_data, message)
+        if parsed_data:
+            save_as_csv(parsed_data, message)
+        else:
+            save_as_csv(else_parsed_data, message)
+    reset_session_data()
 
 def save_as_json(data, message):
-    json_filename = 'avito_data.json'
+    json_filename = 'data.json'
     with open(json_filename, 'w', encoding='utf-8') as json_file:
         json.dump(data, json_file, ensure_ascii=False, indent=4)
     
@@ -225,7 +343,7 @@ def save_as_json(data, message):
     os.remove(json_filename)
 
 def save_as_csv(data, message):
-    csv_filename = 'avito_data.csv'
+    csv_filename = 'data.csv'
     keys = data[0].keys()
     
     with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
